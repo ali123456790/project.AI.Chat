@@ -644,7 +644,7 @@ class Config:
     HYBRID_TOP_N = 10  # Number of results to consider from each search type
 
     # Testing Settings
-    MAX_FILES_FOR_TESTING = 1000  # Limit number of files for testing (None for all files)
+    MAX_FILES_FOR_TESTING = None  # Limit number of files for testing (None for all files)
 
     # Cross-encoder re-ranker (two-stage retrieval) - BGE family for optimal compatibility
     CROSS_ENCODER_MODEL_NAME = 'BAAI/bge-reranker-large'
