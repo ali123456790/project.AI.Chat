@@ -645,8 +645,8 @@ def display_document_results(results, result_type="documents", message_id=None):
             st.markdown("### 🗺️ Letter Locations")
             letters_map = create_letters_map(letters_with_locations)
             if letters_map:
-                # Create unique key for this map instance to avoid Streamlit duplicate key errors
-                map_key = f"map_{message_id}_{len(letters_with_locations)}" if message_id else f"map_{len(letters_with_locations)}"
+                # Create unique key for each map instance to avoid duplicate element errors
+                map_key = f"letters_map_{message_id}_{len(letters_with_locations)}"
                 st_folium(letters_map, width=700, height=400, key=map_key)
             else:
                 st.info("📍 Map could not be created with available location data")
