@@ -131,6 +131,16 @@ class QueryClassifier:
             r'\b(wrote letters?|sent letters?|correspondence)\b'
         ]
         
+        # NEW: Title search patterns for specific letter requests
+        self.title_patterns = [
+            r'\b(letter|correspondence|document|text|summary of letter)\b',
+            r'\b(give me|show me|find|get) .*?(letter|correspondence)\b',
+            r'\b(full text|complete text|entire letter|whole letter)\b',
+            r'\b(the letter|this letter|that letter)\b',
+            r'\b(title|titled|called|named)\b.*?(letter|correspondence)',
+            r'\b(letter.*?(from|to|dated|written))\b'
+        ]
+        
         # Enhanced time patterns
         self.time_patterns = [
             r'\b(18[0-9]{2}|19[0-9]{2})\b',  # Years like 1861, 1865
@@ -170,6 +180,7 @@ class QueryClassifier:
         scores = {
             'qa': 0.0,
             'sender': 0.0, 
+            'title': 0.0,
             'year': 0.0,
             'topic': 0.0,
             'semantic': 0.0,
@@ -208,6 +219,30 @@ class QueryClassifier:
                         break
         
         scores['sender'] = min(sender_score, 0.9)
+        
+        # Title detection for specific letter requests
+        title_score = 0
+        extracted_title_phrase = None
+        for pattern in self.title_patterns:
+            if re.search(pattern, query_lower):
+                title_score += 0.4
+                # Extract potential title phrase from query
+                if 'letter' in query_lower and ('from' in query_lower or 'to' in query_lower):
+                    # This looks like a specific letter request
+                    title_score += 0.5
+                    # Try to extract the title-like part
+                    title_patterns = [
+                        r'(?:letter|correspondence|document)\s+(.+?)(?:\s+(?:from|to|dated|written)|\s*[;:,]|$)',
+                        r'(?:give me|show me|find|get)\s+(?:summary of\s+)?(?:letter\s+)?(.+?)(?:\s*[;:,]|$)',
+                        r'(?:title|titled|called|named)\s+(.+?)(?:\s*[;:,]|$)'
+                    ]
+                    for title_pattern in title_patterns:
+                        title_match = re.search(title_pattern, query_lower)
+                        if title_match:
+                            extracted_title_phrase = title_match.group(1).strip()
+                            break
+        
+        scores['title'] = min(title_score, 0.9)
         
         # Time/year detection with enhanced patterns
         time_score = 0
@@ -261,6 +296,14 @@ class QueryClassifier:
                 'query': final_query,
                 'confidence': confidence,
                 'explanation': f'Detected author search - finding letters from "{final_query}"'
+            }
+        elif best_type == 'title':
+            final_query = extracted_title_phrase if extracted_title_phrase else query
+            return {
+                'search_type': 'title',
+                'query': final_query,
+                'confidence': confidence,
+                'explanation': f'Detected specific letter request - searching for "{final_query}"'
             }
         elif best_type == 'year':
             final_query = extracted_year if extracted_year else query
@@ -346,6 +389,9 @@ def execute_intelligent_search(letter_index, user_query, spacy_nlp_model, senten
             
         elif search_type == 'sender':
             results = search_by_sender(letter_index, query)
+            
+        elif search_type == 'title':
+            results = search_by_title(letter_index, query)
             
         elif search_type == 'year':
             results = search_by_year(letter_index, query)
@@ -598,7 +644,7 @@ class Config:
     HYBRID_TOP_N = 10  # Number of results to consider from each search type
 
     # Testing Settings
-    MAX_FILES_FOR_TESTING = None  # Limit number of files for testing (None for all files)
+    MAX_FILES_FOR_TESTING = 1000  # Limit number of files for testing (None for all files)
 
     # Cross-encoder re-ranker (two-stage retrieval) - BGE family for optimal compatibility
     CROSS_ENCODER_MODEL_NAME = 'BAAI/bge-reranker-large'
@@ -905,23 +951,78 @@ def extract_people_from_xml(root: ET.Element, namespaces: Dict[str, str]) -> Tup
         # Try to get creator from metadata first
         creator_element = root.find('.//tei:xenoData/tei:iiifMetadata/tei:element[@label="Creator"]/tei:value', namespaces)
         if creator_element is not None and creator_element.text:
-            sender = creator_element.text.strip()
+            creator_name = creator_element.text.strip()
+            # Clean up the creator name (remove dates and extra info)
+            if ',' in creator_name:
+                # Handle names like "Clark, Charles, 1811-1877"
+                parts = creator_name.split(',')
+                if len(parts) >= 2:
+                    # Reconstruct as "First Last" format
+                    last_name = parts[0].strip()
+                    first_name = parts[1].strip()
+                    sender = f"{first_name} {last_name}"
+                else:
+                    sender = creator_name
+            else:
+                sender = creator_name
+            
             if sender not in people_in_doc: 
                 people_in_doc.append(sender)
 
-        # Extract from listPerson
+        # Extract from listPerson to get all people mentioned
         for person_element in root.findall('.//tei:listPerson/tei:person', namespaces):
             pers_name_element = person_element.find('.//tei:persName', namespaces)
             if pers_name_element is not None and pers_name_element.text:
                 person_name = pers_name_element.text.strip()
-                if person_name not in people_in_doc:
-                     people_in_doc.append(person_name)
+                
+                # Clean up the person name (remove dates and extra info)
+                if ',' in person_name:
+                    parts = person_name.split(',')
+                    if len(parts) >= 2:
+                        # Reconstruct as "First Last" format
+                        last_name = parts[0].strip()
+                        first_name = parts[1].strip()
+                        clean_name = f"{first_name} {last_name}"
+                    else:
+                        clean_name = person_name
+                else:
+                    clean_name = person_name
+                
+                if clean_name not in people_in_doc:
+                     people_in_doc.append(clean_name)
 
-                # Simple heuristic for recipient (looking for common names)
-                if any(name in person_name.lower() for name in ['pettus', 'stone', 'governor']):
-                    recipient = person_name
-                elif sender == "Unknown" and not any(name in person_name.lower() for name in ['pettus', 'stone']):
-                    sender = person_name
+                # Better heuristic for recipient using title information
+                title_element = root.find('.//tei:title[@type="main"]', namespaces)
+                if title_element is not None and title_element.text:
+                    title_text = title_element.text.lower()
+                    
+                    # If this person is mentioned in the title as recipient
+                    person_lower = clean_name.lower()
+                    if ('to ' + person_lower in title_text or 
+                        'governor ' + person_lower.split()[-1] in title_text):
+                        recipient = clean_name
+                    # If sender is unknown and this person matches the "from" part
+                    elif sender == "Unknown" and ('from ' + person_lower in title_text):
+                        sender = clean_name
+
+        # Final fallback: extract from title directly if still unknown
+        if sender == "Unknown" or recipient == "Unknown":
+            title_element = root.find('.//tei:title[@type="main"]', namespaces)
+            if title_element is not None and title_element.text:
+                title_text = title_element.text
+                
+                # Parse title format like "Letter from X to Y"
+                import re
+                title_match = re.search(r'(?:letter|correspondence)\s+from\s+([^;]+?)\s+to\s+([^;]+?)(?:\s*;|$)', title_text, re.IGNORECASE)
+                if title_match:
+                    if sender == "Unknown":
+                        sender = title_match.group(1).strip()
+                        if sender not in people_in_doc:
+                            people_in_doc.append(sender)
+                    if recipient == "Unknown":
+                        recipient = title_match.group(2).strip()
+                        if recipient not in people_in_doc:
+                            people_in_doc.append(recipient)
 
     except Exception as e:
         logger.warning(f"Error extracting people from XML: {e}")
@@ -981,17 +1082,35 @@ def extract_date_info(root: ET.Element, namespaces: Dict[str, str], title: str) 
         # Try metadata first
         date_element = root.find('.//tei:xenoData/tei:iiifMetadata/tei:element[@label="Date"]/tei:value', namespaces)
         if date_element is not None and date_element.text:
-            main_date = date_element.text.strip()
+            date_text = date_element.text.strip()
+            main_date = date_text
+            
+            # If it's in ISO format (1861-06-29), convert to readable format
+            if re.match(r'\d{4}-\d{2}-\d{2}', date_text):
+                try:
+                    from datetime import datetime
+                    date_obj = datetime.strptime(date_text, '%Y-%m-%d')
+                    main_date = date_obj.strftime('%B %d, %Y')
+                except:
+                    main_date = date_text  # Keep original if conversion fails
         else:
             # Fallback to title extraction
             date_match = re.search(r'(\w+\s+\d{1,2},\s+\d{4}|\d{4}-\d{2}-\d{2})', title)
             if date_match:
                 main_date = date_match.group(0)
 
-        # Extract year
+        # Extract year from various formats
         year_match = re.search(r'\b(\d{4})\b', main_date)
         if year_match:
             year = int(year_match.group(1))
+        
+        # Also try extracting from coverage time period if year is still None
+        if year is None:
+            coverage_element = root.find('.//tei:xenoData/tei:iiifMetadata/tei:element[@label="Coverage (time period)"]/tei:value', namespaces)
+            if coverage_element is not None and coverage_element.text:
+                coverage_year_match = re.search(r'\b(\d{4})\b', coverage_element.text.strip())
+                if coverage_year_match:
+                    year = int(coverage_year_match.group(1))
 
     except Exception as e:
         logger.warning(f"Error extracting date info: {e}")
@@ -1040,12 +1159,19 @@ def parse_letter_xml(file_path: str) -> Dict[str, Any]:
         
         # Extract basic metadata
         extracted_data['title'] = extract_title_from_xml(root, namespaces)
-        extracted_data['sender'] = extract_sender_from_xml(root, namespaces)
-        extracted_data['recipient'] = extract_recipient_from_xml(root, namespaces)
-        extracted_data['date'] = extract_date_from_xml(root, namespaces)
-        extracted_data['year'] = extract_year_from_date(extracted_data['date'])
+        
+        # Extract people information (returns tuple: sender, recipient, all_people)
+        sender, recipient, all_people = extract_people_from_xml(root, namespaces)
+        extracted_data['sender'] = sender
+        extracted_data['recipient'] = recipient
+        extracted_data['people'] = all_people
+        
+        # Extract date information (returns tuple: date_string, year_int)
+        date_string, year_int = extract_date_info(root, namespaces, extracted_data['title'])
+        extracted_data['date'] = date_string
+        extracted_data['year'] = year_int
+        
         extracted_data['places'] = extract_places_from_xml(root, namespaces)
-        extracted_data['people'] = extract_people_from_xml(root, namespaces)
         extracted_data['full_text'] = extract_full_text_from_xml(root, namespaces)
         extracted_data['description'] = extract_description_from_xml(root, namespaces)
         extracted_data['correspondence_type'] = extract_correspondence_type_from_xml(root, namespaces)
@@ -1917,6 +2043,57 @@ def search_by_recipient(index: List[Dict[str, Any]], query: str) -> List[Dict[st
         return results
     except Exception as e:
         logger.error(f"Error in recipient search: {e}")
+        return []
+
+def search_by_title(index: List[Dict[str, Any]], query: str) -> List[Dict[str, Any]]:
+    """Search for letters by title with fuzzy matching and keyword extraction."""
+    if not query or not query.strip():
+        logger.warning("Empty query provided for title search")
+        return []
+
+    try:
+        results = []
+        query_lower = query.lower().strip()
+        
+        # Extract key terms from the query for better matching
+        import re
+        # Remove common words that don't help with matching
+        stop_words = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'from', 'up', 'about', 'into', 'through', 'during', 'before', 'after', 'above', 'below', 'between', 'among', 'within', 'letter', 'correspondence', 'document', 'summary', 'give', 'me', 'show', 'find', 'get', 'written', 'dated'}
+        query_words = [word for word in re.findall(r'\b\w+\b', query_lower) if word not in stop_words and len(word) > 2]
+        
+        for item in index:
+            title = item.get('title', "")
+            if isinstance(title, str):
+                title_lower = title.lower()
+                
+                # Check for exact phrase match (highest priority)
+                if query_lower in title_lower:
+                    item_copy = item.copy()
+                    item_copy['match_score'] = 1.0
+                    item_copy['match_reason'] = 'Exact phrase match'
+                    results.append(item_copy)
+                    continue
+                
+                # Check for word matches
+                title_words = re.findall(r'\b\w+\b', title_lower)
+                matching_words = [word for word in query_words if word in title_words]
+                
+                if matching_words:
+                    # Calculate match score based on percentage of query words found
+                    match_score = len(matching_words) / len(query_words) if query_words else 0
+                    if match_score >= 0.3:  # At least 30% of words must match
+                        item_copy = item.copy()
+                        item_copy['match_score'] = match_score
+                        item_copy['match_reason'] = f'Word match: {", ".join(matching_words)}'
+                        results.append(item_copy)
+
+        # Sort results by match score (highest first)
+        results.sort(key=lambda x: x.get('match_score', 0), reverse=True)
+        
+        logger.debug(f"Title search for '{query}': {len(results)} results")
+        return results
+    except Exception as e:
+        logger.error(f"Error in title search: {e}")
         return []
 
 def search_by_year(index: List[Dict[str, Any]], year_query: str) -> List[Dict[str, Any]]:
