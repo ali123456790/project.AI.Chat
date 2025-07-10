@@ -457,13 +457,16 @@ def handle_button_action(action_type: str, doc: Dict, message_id: str, index: in
             "content": f"📖 Show full letter: {doc.get('title', 'Unknown')}"
         })
         
-        # Add full letter response
+        # Add enhanced full letter response with context
         full_text = doc.get('full_text', 'Full text not available')
         word_count = len(full_text.split()) if full_text != 'Full text not available' else 0
         title = doc.get('title', 'this letter')
         sender = doc.get('sender', 'Unknown')
         recipient = doc.get('recipient', 'Unknown')
         year = doc.get('year', 'Unknown')
+        date = doc.get('date', 'Unknown')
+        places = doc.get('places', [])
+        correspondence_type = doc.get('correspondence_type', 'Unknown')
         
         if full_text == 'Full text not available':
             response = f"I'm sorry, but the full text of **{title}** isn't available in my database right now. "
@@ -476,19 +479,91 @@ def handle_button_action(action_type: str, doc: Dict, message_id: str, index: in
                 response += f" in {year}"
             response += "."
         else:
-            response = f"Here's the complete text of **{title}**"
-            if sender != 'Unknown':
-                response += f", written by {sender}"
-            if recipient != 'Unknown':
-                response += f" to {recipient}"
+            # Enhanced response with historical context
+            response = f"Here's the complete text of **{title}** in {year}:\n\n"
+            
+            # **SOLUTION 1: Better Letter Context Information**
+            response += "## 📋 **Letter Details & Historical Context**\n\n"
+            
+            # Create a detailed context section
+            response += f"**📤 From:** {sender}\n"
+            response += f"**📥 To:** {recipient}\n"
+            response += f"**📅 Date:** {date} ({year})\n"
+            if correspondence_type != 'Unknown':
+                response += f"**📝 Type:** {correspondence_type}\n"
+            if places:
+                response += f"**📍 Locations mentioned:** {', '.join(places[:3])}\n"
+            response += f"**📏 Length:** {word_count} words\n"
+            
+            # **SOLUTION 2: Enhanced Letter Display - Highlight Unique Aspects**
+            response += "\n### 🎯 **What Makes This Letter Unique:**\n"
+            
+            # Analyze and highlight unique features
+            unique_features = []
+            
+            # Check for standard military forms
+            if any(keyword in full_text.lower() for keyword in ['rations', 'post commissary', 'order', 'approved']):
+                unique_features.append(f"📋 **Military Administrative Order** - This is an official military document from {sender}")
+                if 'rations' in full_text.lower():
+                    # Extract ration details to show differences
+                    import re
+                    ration_match = re.search(r'(\d+)\s*days?\s*.*?rations?', full_text.lower())
+                    if ration_match:
+                        days = ration_match.group(1)
+                        unique_features.append(f"🍽️ **Specific Ration Order** - Authorizes {days} days of rations (different amounts show different needs)")
+            
+            # Check for personal vs official correspondence
+            if any(keyword in full_text.lower() for keyword in ['dear', 'love', 'family', 'home', 'personal']):
+                unique_features.append("💌 **Personal Correspondence** - Contains personal thoughts and emotions")
+            elif any(keyword in full_text.lower() for keyword in ['sir', 'official', 'hereby', 'pursuant']):
+                unique_features.append("🏛️ **Official Business** - Formal institutional communication")
+            
+            # Highlight sender rank/role differences
+            if any(rank in sender.lower() for rank in ['lieutenant', 'captain', 'colonel', 'general']):
+                unique_features.append(f"⭐ **Military Rank** - Written by {sender} (rank indicates level of authority)")
+            
+            # Date context
             if year != 'Unknown':
-                response += f" in {year}"
-            response += f":\n\n**Full Letter Text ({word_count} words):**\n\n---\n\n{full_text}\n\n---"
+                try:
+                    year_int = int(year)
+                    if year_int <= 1861:
+                        unique_features.append("📅 **Pre-War Period** - Written before or at the start of the Civil War")
+                    elif year_int <= 1863:
+                        unique_features.append("⚔️ **Early War Period** - Written during the intense early years of conflict")
+                    elif year_int <= 1865:
+                        unique_features.append("🏁 **Late War Period** - Written as the war was ending")
+                    else:
+                        unique_features.append("🕊️ **Post-War Reconstruction** - Written during the rebuilding period")
+                except:
+                    pass
+            
+            # Add the unique features to response
+            if unique_features:
+                for feature in unique_features:
+                    response += f"• {feature}\n"
+            else:
+                response += "• 📜 **Distinctive Content** - This letter has unique subject matter and perspective\n"
+            
+            # Historical context explanation for similar letters
+            response += "\n### 📚 **Understanding Historical Letters:**\n"
+            if 'order' in full_text.lower() and any(rank in sender.lower() for rank in ['lieutenant', 'captain']):
+                response += "ℹ️ **Why some letters seem similar:** Military units used standard forms and procedures. "
+                response += "Multiple officers would issue similar orders on the same day, but each represents a distinct historical decision and action. "
+                response += "The differences in officers, amounts, and recipients tell us about military organization and daily operations.\n\n"
+            else:
+                response += "ℹ️ **Historical authenticity:** Each letter represents a unique moment in time, even when content seems similar. "
+                response += "People often wrote about common experiences, but each perspective adds to our understanding of the era.\n\n"
+            
+            # The actual letter text
+            response += f"## 📜 **Full Letter Text ({word_count} words):**\n\n"
+            response += "---\n\n"
+            response += full_text
+            response += "\n\n---"
         
         st.session_state.chat_history.append({
             "role": "assistant",
             "content": response,
-            "search_info": {"explanation": "Full letter display", "confidence": 1.0}
+            "search_info": {"explanation": "Enhanced full letter display with historical context", "confidence": 1.0}
         })
         
     elif action_type == "find_similar":
@@ -656,28 +731,133 @@ def display_document_results(results, result_type="documents", message_id=None):
             year = doc.get('year', 'Unknown')
             sender = doc.get('sender', 'Unknown')
             recipient = doc.get('recipient', 'Unknown')
+            date = doc.get('date', 'Unknown')
+            correspondence_type = doc.get('correspondence_type', 'Unknown')
+            full_text = doc.get('full_text', '')
             
             # Show documents prominently with key info visible
             st.markdown(f"### 📜 {i}. {title}")
             
-            # Basic info in columns - always visible
-            col1, col2, col3 = st.columns(3)
+            # **ENHANCED: Basic info in columns with more context**
+            col1, col2, col3, col4 = st.columns(4)
             with col1:
                 st.write(f"**From:** {sender}")
             with col2:
                 st.write(f"**To:** {recipient}")
             with col3:
-                st.write(f"**Year:** {year}")
+                st.write(f"**Date:** {date}")
+            with col4:
+                # Add period context with color coding
+                if year != 'Unknown':
+                    try:
+                        year_int = int(year)
+                        if year_int <= 1861:
+                            period_color = "🟣"
+                            period = "Pre-War"
+                        elif year_int <= 1863:
+                            period_color = "🔴"
+                            period = "Early War"
+                        elif year_int <= 1865:
+                            period_color = "🟠"
+                            period = "Late War"
+                        else:
+                            period_color = "🟢"
+                            period = "Post-War"
+                        st.write(f"**Period:** {period_color} {period}")
+                    except:
+                        st.write(f"**Year:** {year}")
+                else:
+                    st.write(f"**Year:** {year}")
+            
+            # **ENHANCED: Letter Type & What Makes It Unique**
+            st.markdown("#### 🎯 **Letter Type & Distinguishing Features:**")
+            
+            # Analyze letter type and unique aspects
+            distinguishing_features = []
+            letter_type = "📜 General Correspondence"
+            
+            # Determine letter type and unique features
+            if full_text:
+                text_lower = full_text.lower()
+                
+                # Military orders
+                if any(keyword in text_lower for keyword in ['rations', 'post commissary', 'order', 'approved']):
+                    letter_type = "📋 Military Administrative Order"
+                    
+                    # Extract specific details that make it unique
+                    import re
+                    if 'rations' in text_lower:
+                        ration_match = re.search(r'(\d+)\s*days?\s*.*?rations?', text_lower)
+                        if ration_match:
+                            days = ration_match.group(1)
+                            distinguishing_features.append(f"🍽️ **{days}-day ration authorization**")
+                    
+                    # Check for specific recipients or units
+                    if 'post commissary' in text_lower:
+                        distinguishing_features.append("🏪 **Post Commissary directive** - supplies management")
+                    
+                    # Authority level
+                    if any(rank in sender.lower() for rank in ['lieutenant', 'captain', 'colonel', 'general']):
+                        rank_match = re.search(r'(lieutenant|captain|colonel|general)', sender.lower())
+                        if rank_match:
+                            rank = rank_match.group(1).title()
+                            distinguishing_features.append(f"⭐ **{rank} authority** - {rank}-level decision")
+                
+                # Personal letters
+                elif any(keyword in text_lower for keyword in ['dear', 'love', 'family', 'home']):
+                    letter_type = "💌 Personal Letter"
+                    if 'family' in text_lower:
+                        distinguishing_features.append("👨‍👩‍👧‍👦 **Family matters** - personal relationships")
+                    if 'home' in text_lower:
+                        distinguishing_features.append("🏠 **News from home** - domestic updates")
+                
+                # Business correspondence
+                elif any(keyword in text_lower for keyword in ['business', 'money', 'payment', 'debt']):
+                    letter_type = "💼 Business Correspondence"
+                    if 'money' in text_lower or 'payment' in text_lower:
+                        distinguishing_features.append("💰 **Financial matters** - monetary transactions")
+                
+                # Legal documents
+                elif any(keyword in text_lower for keyword in ['legal', 'court', 'law', 'hereby']):
+                    letter_type = "⚖️ Legal Document"
+                    distinguishing_features.append("📋 **Legal proceedings** - official legal matter")
+            
+            # Display letter type and features
+            type_info = f"**Type:** {letter_type}"
+            if correspondence_type != 'Unknown' and correspondence_type != letter_type.split()[-1]:
+                type_info += f" | **Category:** {correspondence_type}"
+            
+            st.info(type_info)
+            
+            # Show distinguishing features if any
+            if distinguishing_features:
+                st.markdown("**🔍 Key Details:**")
+                for feature in distinguishing_features:
+                    st.markdown(f"• {feature}")
+            else:
+                # Add word count and basic uniqueness indicator
+                if full_text:
+                    word_count = len(full_text.split())
+                    if word_count < 50:
+                        distinguishing_features.append(f"📝 **Brief communication** - {word_count} words")
+                    elif word_count > 200:
+                        distinguishing_features.append(f"📚 **Detailed letter** - {word_count} words")
+                    else:
+                        distinguishing_features.append(f"📄 **Standard length** - {word_count} words")
+                    
+                    st.markdown("**🔍 Key Details:**")
+                    for feature in distinguishing_features:
+                        st.markdown(f"• {feature}")
             
             # Show relevant excerpt prominently if available
             if 'relevant_snippet' in doc and doc['relevant_snippet']:
-                st.markdown("**Key excerpt:**")
+                st.markdown("**📖 Key excerpt:**")
                 snippet = doc['relevant_snippet']
                 if len(snippet) > 300:
                     snippet = snippet[:300] + "..."
-                st.info(f"*\"{snippet}\"*")
+                st.success(f"*\"{snippet}\"*")
             elif doc.get('description'):
-                st.markdown("**About this letter:**")
+                st.markdown("**📋 About this letter:**")
                 description = doc['description']
                 if len(description) > 200:
                     description = description[:200] + "..."
